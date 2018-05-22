@@ -1,0 +1,167 @@
+-- Copyright 2018 Google LLC
+--
+-- Licensed under the Apache License, Version 2.0 (the "License");
+-- you may not use this file except in compliance with the License.
+-- You may obtain a copy of the License at
+--
+--     https://www.apache.org/licenses/LICENSE-2.0
+--
+-- Unless required by applicable law or agreed to in writing, software
+-- distributed under the License is distributed on an "AS IS" BASIS,
+-- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-- See the License for the specific language governing permissions and
+-- limitations under the License.
+
+let
+  Y = \f -> (\x -> f (x x)) (\x -> f (x x));
+
+  id = \x -> x;
+  const = \x _ -> x;
+  compose = \f g x -> f (g x);
+  flip = \f x y -> f y x;
+
+  true = \x y -> x;
+  false = \x y -> y;
+  not = \b -> b false true;
+  and = \a b -> a b false;
+
+  -- pairs
+
+  pair = \x y f -> f x y;
+  fst = \p -> p (\x y -> x);
+  snd = \p -> p (\x y -> y);
+
+  -- nats
+
+  c_zero = \z s -> z;
+  c_succ = \n z s -> s (n z s);
+
+  zero = \z s -> z;
+  succ = \n z s -> s n (n z s);
+  pred = \n -> n zero (\p _ -> p);
+  plus = \n m -> n m (\p -> succ);
+  sub = \n m -> n m (\p -> pred);
+  lt = \n m -> (sub n m) false (\_ _ -> true);
+  ge = \n m -> (sub n m) true (\_ _ -> false);
+  eq = \n m -> and (ge n m) (ge m n);
+
+  c2p_nat = \n -> n zero succ;
+  p2c_nat = \n -> n c_zero (const c_succ);
+
+  lift2_nat = \f n m -> f (c2p_nat n) (c2p_nat m);
+  process_nat = \f n -> p2c_nat (f (c2p_nat n));
+
+  c_pred = process_nat pred;
+  c_ge = lift2_nat ge;
+  c_lt = lift2_nat lt;
+  c_eq = \n m -> and (c_ge n m) (c_ge m n);
+
+  -- lists
+
+  c_nil = \n c -> n;
+  c_cons = \x xs n c -> c x (xs n c);
+  c_map = \f xs -> xs c_nil (\x -> c_cons (f x));
+
+  nil = \n c -> n;
+  cons = \x xs n c -> c x xs (xs n c);
+  head = \xs -> xs (\_ -> xs) (\x _ _ -> x);
+  tail = \xs -> xs nil (\_ ys _ -> ys);
+  isEmpty = \xs -> xs true (\_ _ _ -> false);
+  append = \xs ys -> xs ys (\x _ r -> cons x r);
+
+  c2p_list = \xs -> xs nil cons;
+  p2c_list = \xs -> xs c_nil (\x _ r -> c_cons x r);
+
+  p2c_natlist = compose (c_map p2c_nat) p2c_list;
+  c2p_natlist = compose c2p_list (c_map c2p_nat);
+
+  process_natlist = \f xs -> p2c_natlist (f (c2p_natlist xs));
+
+  insert = \x l ->
+    l
+    (cons x nil)
+    (\y ys r ->
+      (lt x y)
+        (cons x (cons y ys))
+        (cons y r));
+  sort = \xs -> xs nil (\y _ r -> insert y r);
+
+  -- maybe
+
+  just = \x n j -> j x;
+  nothing = \n j -> n;
+
+  fmap = \f mx -> mx nothing (\x -> just (f x));
+  flatMap = \f mx -> mx nothing f;
+  alt = \mx my -> mx my (const mx);
+
+  -- terms
+
+  c_lvar = \i var _ _ -> var i;
+  c_llam = \t var lam app -> lam (t var lam app);
+  c_lapp = \t u var lam app -> app (t var lam app) (u var lam app);
+
+  lvar = \i var _ _ -> var i;
+  llam = \t var lam app -> lam t (t var lam app);
+  lapp = \t u var lam app -> app t u (t var lam app) (u var lam app);
+
+  c2p_term = \t -> t lvar llam lapp;
+  p2c_term = \t -> t c_lvar (\_ -> c_llam) (\_ _ -> c_lapp);
+
+  map_vars = \f t var lam app -> t
+    (\i -> var (f i))
+    lam
+    app;
+
+  process_term = id; -- \f t -> p2c_term (f (c2p_term t));
+
+  shift' = \f t -> t
+    (\i c -> (c_lvar ((c_lt i c) i (f i))))
+    (\t c -> c_llam (t (c_succ c)))
+    (\l r c -> c_lapp (l c) (r c));
+
+  shift = \f t -> shift' f t 0;
+
+  subst = \t -> t
+    (\j i u -> (c_eq i j) u (c_lvar j))
+    (\t i u -> c_llam (t (c_succ i) (shift c_succ u)))
+    (\t1 t2 i u -> c_lapp (t1 i u) (t2 i u));
+
+  sub = \t ->
+    snd (
+      t (\i -> pair (c_lvar i) id)
+        (\p -> pair (c_llam (fst p)) (fst p))
+        (\u v -> pair (c_lapp (fst u) (fst v)) id));
+
+  reduce = \t -> t
+    (\i -> c_lvar i)
+    (\r -> c_llam r)
+    (\rt ru -> rt
+      (\_ -> c_lapp rt ru)
+      (\_ -> shift c_pred (subst (sub rt) 0 (shift c_succ ru)))
+      (\_ _ -> c_lapp rt ru));
+
+  test = \var lam app ->
+    let
+      v0 = var 0;
+      v1 = var 1;
+      v2 = var 2;
+      z = lam (lam v1);
+      s = lam (lam (lam (app v0 (app (app v2 v1) v0))));
+      plus = lam (lam (app (app v1 v0) s));
+      one = lam (lam (app v0 v1));
+      two = lam (lam (app v0 (app v0 v1)))
+    in
+      app (app plus one) one;
+
+  red_n = \n t -> n t reduce
+
+in
+  -- process_natlist sort [6,5,4,3,2,1]
+  --reduce_many test
+  --let id = \v l a -> l (v 0)
+  --in reduce (c_lapp (c_lapp id id) id)
+  --c_lt 2 3
+  red_n 3 test
+  --reduce test
+
